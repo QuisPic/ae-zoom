@@ -233,7 +233,7 @@ NumberValue.prototype.getValue = function () {
   return parseFloat(this.element.grValue.grText.txtValue.text);
 };
 
-NumberValue.prototype.setValue = function (val) {
+NumberValue.prototype.setValue = function (val, skipLayout) {
   if (this.minValue !== undefined) {
     val = val < this.minValue ? this.minValue : val;
   }
@@ -247,7 +247,9 @@ NumberValue.prototype.setValue = function (val) {
   txt.text = val;
   txt.size = txt.graphics.measureString(val);
 
-  this.element.layout.layout(true);
+  if (!skipLayout) {
+    this.element.layout.layout(true);
+  }
 };
 
 NumberValue.prototype.onChange = function () {
