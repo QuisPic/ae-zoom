@@ -46,7 +46,11 @@ function Settings(zoom, parentEl) {
         var menuWindow = this.menuWindow;
 
         this.settingsItem = menuWindow.addMenuItem("Settings", function () {
-          windows.new(new SettingsWindow(zoom));
+          try {
+            app.scheduleTask("$.global.__quis_zoom_open_settings()", 10, false);
+          } catch (error) {
+            windows.new(new SettingsWindow(zoom));
+          }
         });
 
         menuWindow.addDivider();

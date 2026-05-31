@@ -2,18 +2,24 @@ import Settings from "./ui/settings";
 import NumberValue from "./ui/number-value";
 import Slider from "./ui/slider";
 import ValueList from "./ui/value-list";
-import { KB_ACTION, STICK_TO } from "./constants";
+import {
+  CUSTOM_SLIDER_LIVE_INTERVAL_MS,
+  KB_ACTION,
+  STICK_TO,
+} from "./constants";
 import preferences from "./preferences";
 import bind from "../extern/function-bind";
 import zoomPlugin from "./zoomPlugin";
 
 function Zoom(thisObj) {
-  var currentZoom = this.getViewZoom() || 100;
+  var currentZoom = 100;
 
   this.w =
     thisObj instanceof Panel
       ? thisObj
-      : new Window("palette", "Zoom", undefined, { resizeable: true });
+      : new Window("palette", "Zoom", undefined, {
+          resizeable: true,
+        });
 
   this.w.orientation = "row";
   this.w.alignChildren = ["left", "center"];
@@ -58,14 +64,66 @@ function Zoom(thisObj) {
 }
 
 Zoom.prototype.getActiveViewer = function () {
-  if (app.activeViewer) {
-    this.lastActiveViewer = app.activeViewer;
-    return app.activeViewer;
+  var activeViewer;
+
+  try {
+    activeViewer = app.activeViewer;
+  } catch (error) {
+    if (isModalStartupError(error)) {
+      return this.lastActiveViewer;
+    }
+
+    throw error;
+  }
+
+  if (activeViewer) {
+    this.lastActiveViewer = activeViewer;
+    return activeViewer;
   } else if (this.lastActiveViewer) {
     return this.lastActiveViewer;
   } else {
     return;
   }
+};
+
+Zoom.prototype.getActiveViewIndex = function (viewer) {
+  var viewIndex = 0;
+
+  if (!viewer || !viewer.views || !viewer.views.length) {
+    return viewIndex;
+  }
+
+  try {
+    if (typeof viewer.activeViewIndex === "number") {
+      viewIndex = viewer.activeViewIndex;
+    }
+  } catch (error) {
+    viewIndex = 0;
+  }
+
+  if (isNaN(viewIndex) || viewIndex < 0 || viewIndex >= viewer.views.length) {
+    viewIndex = 0;
+  }
+
+  return viewIndex;
+};
+
+Zoom.prototype.getActiveView = function (viewer) {
+  viewer = viewer || this.getActiveViewer();
+
+  if (!viewer || !viewer.views || !viewer.views.length) {
+    return undefined;
+  }
+
+  return viewer.views[this.getActiveViewIndex(viewer)];
+};
+
+Zoom.prototype.canUsePluginZoom = function (viewer) {
+  return (
+    preferences.experimental.fixViewportPosition.enabled &&
+    zoomPlugin.isAvailable() &&
+    this.getActiveViewIndex(viewer) === 0
+  );
 };
 
 Zoom.prototype.addSlider = function () {
@@ -80,11 +138,6 @@ Zoom.prototype.addSlider = function () {
     preferences.sliderMax,
   );
 
-  this.zoomSlider.element.addEventListener(
-    "mouseover",
-    this.produceSyncOnMouseOver(),
-  );
-
   this.zoomSlider.addIncrementBtns(this, this.produceOnIncrement());
 
   this.w.grSlider.alignment = ["fill", "center"];
@@ -93,12 +146,13 @@ Zoom.prototype.addSlider = function () {
 
 Zoom.prototype.getViewZoom = function () {
   var viewer = this.getActiveViewer();
+  var view = this.getActiveView(viewer);
 
-  if (!viewer) {
+  if (!view) {
     return undefined;
   }
 
-  var zoomValue = viewer.views[0].options.zoom;
+  var zoomValue = view.options.zoom;
   zoomValue *= preferences.highDPI.enabled
     ? 100 * preferences.highDPI.scale
     : 100;
@@ -106,32 +160,69 @@ Zoom.prototype.getViewZoom = function () {
   return parseFloat(zoomValue.toFixed(2));
 };
 
-Zoom.prototype.setUiTo = function (zoomValue) {
-  this.zoomNumberValue.setValue(zoomValue);
+Zoom.prototype.setUiTo = function (zoomValue, skipSlider, skipLayout) {
+  this.zoomNumberValue.setValue(zoomValue, skipLayout);
 
-  if (this.zoomSlider && isValid(this.zoomSlider.element)) {
+  if (!skipSlider && this.zoomSlider && isValid(this.zoomSlider.element)) {
     this.zoomSlider.setValue(zoomValue);
   }
 };
 
-Zoom.prototype.setTo = function (zoomValue) {
+Zoom.prototype.setTo = function (zoomValue, viewer, view, forceScriptZoom) {
   zoomValue = zoomValue < 0.8 ? 0.8 : zoomValue;
-  var viewer = this.getActiveViewer();
+  viewer = viewer || this.getActiveViewer();
+  view = view || this.getActiveView(viewer);
   var isActionPosted = false;
 
-  if (
-    preferences.experimental.fixViewportPosition.enabled &&
-    zoomPlugin.isAvailable()
-  ) {
+  if (!forceScriptZoom && this.canUsePluginZoom(viewer)) {
     isActionPosted = zoomPlugin.postZoomAction(KB_ACTION.SET_TO, zoomValue);
   }
 
-  if (!isActionPosted && viewer) {
+  if (!isActionPosted && view) {
     zoomValue /= preferences.highDPI.enabled
       ? 100 * preferences.highDPI.scale
       : 100;
-    viewer.views[0].options.zoom = zoomValue;
+    view.options.zoom = zoomValue;
   }
+};
+
+Zoom.prototype.queueSliderZoom = function (zoomValue) {
+  this.scrubZoomValue = zoomValue;
+};
+
+Zoom.prototype.queueSliderPreview = function (zoomValue) {
+  this.queueSliderZoom(zoomValue);
+  this.pendingSliderZoomValue = zoomValue;
+
+  if (!this.sliderPreviewScheduled) {
+    this.sliderPreviewScheduled = true;
+
+    try {
+      app.scheduleTask(
+        "$.global.__quis_zoom_custom_apply_slider_preview()",
+        CUSTOM_SLIDER_LIVE_INTERVAL_MS,
+        false,
+      );
+    } catch (error) {
+      this.applyPendingSliderPreview();
+    }
+  }
+};
+
+Zoom.prototype.applyPendingSliderPreview = function () {
+  this.sliderPreviewScheduled = false;
+
+  if (!this.sliderScrubbing || this.pendingSliderZoomValue === undefined) {
+    return;
+  }
+
+  var zoomValue = this.pendingSliderZoomValue;
+  var viewer = this.scrubViewer || this.getActiveViewer();
+  var view = this.scrubView || this.getActiveView(viewer);
+
+  this.pendingSliderZoomValue = undefined;
+  this.setTo(zoomValue, viewer, view, true);
+  this.setUiTo(zoomValue, true, true);
 };
 
 Zoom.prototype.syncWithView = function () {
@@ -170,8 +261,13 @@ Zoom.prototype.produceSliderOnScrubStart = function () {
 
   return function () {
     var viewer = thisZoom.getActiveViewer();
+    var view = thisZoom.getActiveView(viewer);
 
-    thisZoom.origExposure = viewer ? viewer.views[0].options.exposure : 0;
+    thisZoom.sliderScrubbing = true;
+    thisZoom.scrubViewer = viewer;
+    thisZoom.scrubView = view;
+    thisZoom.scrubZoomValue = undefined;
+    thisZoom.pendingSliderZoomValue = undefined;
   };
 };
 
@@ -179,34 +275,31 @@ Zoom.prototype.produceSliderOnChange = function () {
   var thisZoom = this;
 
   return function (zoomValue) {
-    var viewer = thisZoom.getActiveViewer();
-    var view = viewer ? viewer.views[0] : undefined;
-
-    thisZoom.setTo(zoomValue);
-    thisZoom.setUiTo(zoomValue);
-
-    // this exposure trick makes AE refresh the view panel everytime we move the slider
-    if (thisZoom.origExposure !== undefined && viewer) {
-      view.options.exposure =
-        view.options.exposure === thisZoom.origExposure
-          ? thisZoom.origExposure + 0.01
-          : thisZoom.origExposure;
-    }
+    thisZoom.queueSliderPreview(zoomValue);
   };
 };
 
 Zoom.prototype.produceSliderOnScrubEnd = function () {
   var thisZoom = this;
 
-  return function () {
-    var viewer = thisZoom.getActiveViewer();
-    var view = viewer ? viewer.views[0] : undefined;
+  return function (zoomValue) {
+    thisZoom.queueSliderZoom(
+      zoomValue !== undefined ? zoomValue : thisZoom.zoomNumberValue.getValue(),
+    );
+    var finalZoomValue =
+      thisZoom.scrubZoomValue !== undefined
+        ? thisZoom.scrubZoomValue
+        : thisZoom.zoomNumberValue.getValue();
+    var viewer = thisZoom.scrubViewer || thisZoom.getActiveViewer();
+    var view = thisZoom.scrubView || thisZoom.getActiveView(viewer);
 
-    if (thisZoom.origExposure !== undefined && view) {
-      view.options.exposure = thisZoom.origExposure;
-    }
-
-    thisZoom.origExposure = undefined;
+    thisZoom.setTo(finalZoomValue, viewer, view, true);
+    thisZoom.setUiTo(finalZoomValue);
+    thisZoom.scrubZoomValue = undefined;
+    thisZoom.pendingSliderZoomValue = undefined;
+    thisZoom.scrubViewer = undefined;
+    thisZoom.scrubView = undefined;
+    thisZoom.sliderScrubbing = false;
   };
 };
 
@@ -245,5 +338,14 @@ Zoom.prototype.showHideSlider = function (val) {
   this.w.layout.layout(true);
   this.w.layout.resize();
 };
+
+export function isModalStartupError(error) {
+  var message = error ? String(error.message || error) : "";
+  return (
+    message.indexOf("modal dialog") !== -1 ||
+    message.indexOf("5027") !== -1 ||
+    (error && error.number === 5027)
+  );
+}
 
 export default Zoom;

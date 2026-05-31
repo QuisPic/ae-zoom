@@ -65,40 +65,59 @@ ZoomPlugin.prototype.searchForPlugin = function (folder) {
 
 ZoomPlugin.prototype.findPlugin = function () {
   var pluginsFoldersPaths = getPluginsFoldersPaths();
+  var separator = AE_OS === OS.WIN ? "\\" : "/";
 
-  /** first check the default plug-in locations */
-  this.loadPlugin(
-    pluginsFoldersPaths.common.fsName +
-      (AE_OS === OS.WIN ? "\\" : "/") +
-      PLUGIN_FILE_NAME,
-  );
+  function normalizeFolderPath(path) {
+    if (!path) {
+      return "";
+    }
 
-  if (!this.foundEO) {
-    this.loadPlugin(
-      pluginsFoldersPaths.individual.fsName +
-        (AE_OS === OS.WIN ? "\\" : "/") +
-        PLUGIN_FILE_NAME,
-    );
+    path = path.toString();
+    var lastChar = path.charAt(path.length - 1);
+    if (lastChar !== "\\" && lastChar !== "/") {
+      path += separator;
+    }
+
+    return path;
   }
 
-  /** if the plugin isn't found in the default folders
-   * try to search explicitly in the plugins folders */
-  if (!this.foundEO) {
-    var pluginsFolders = [
-      new Folder(pluginsFoldersPaths.common),
-      new Folder(pluginsFoldersPaths.individual),
+  function getCandidatePaths(folderPath) {
+    folderPath = normalizeFolderPath(folderPath);
+    if (!folderPath) {
+      return [];
+    }
+
+    return [
+      folderPath + PLUGIN_FILE_NAME,
+      folderPath + "Zoom" + separator + PLUGIN_FILE_NAME,
     ];
+  }
 
-    for (var i = 0; i < pluginsFolders.length; i++) {
-      if (!pluginsFolders[i].exists) {
-        continue;
+  function tryPluginPath(plugin, path) {
+    if (!path || plugin.foundEO) {
+      return;
+    }
+
+    try {
+      var file = new File(path);
+      if (file.exists) {
+        plugin.loadPlugin(file.fsName);
       }
+    } catch (error) {
+      /**/
+    }
+  }
 
-      this.searchForPlugin(pluginsFolders[i]);
+  /** Only probe the known Zoom plug-in locations. Recursive probing can crash AE. */
+  var candidatePaths = getCandidatePaths(pluginsFoldersPaths.common).concat(
+    getCandidatePaths(pluginsFoldersPaths.individual),
+  );
 
-      if (this.foundEO) {
-        break;
-      }
+  for (var i = 0; i < candidatePaths.length; i++) {
+    tryPluginPath(this, candidatePaths[i]);
+
+    if (this.foundEO) {
+      break;
     }
   }
 };
