@@ -3,6 +3,8 @@ import { SETTINGS_SECTION_NAME, DEFAULT_SETTINGS } from "./constants";
 import JSON from "../extern/json2";
 
 function Preferences() {
+  this.isLoading = true;
+
   if (!app.preferences.havePref(SETTINGS_SECTION_NAME, "keyBindings")) {
     this.save("keyBindings", DEFAULT_SETTINGS.keyBindings);
   }
@@ -65,6 +67,8 @@ function Preferences() {
   this.experimental = JSON.parse(
     app.preferences.getPrefAsString(SETTINGS_SECTION_NAME, "experimental"),
   );
+
+  this.isLoading = false;
 }
 
 Preferences.prototype.save = function (key, value) {
@@ -85,7 +89,7 @@ Preferences.prototype.save = function (key, value) {
   /** If the plugin is available and the preference that was saved is related to the plugin
    * then tell the plugin to read the updated option.
    */
-  if (zoomPlugin.isAvailable()) {
+  if (!this.isLoading && zoomPlugin.isAvailable()) {
     switch (key) {
       case "keyBindings":
         zoomPlugin.updateKeyBindings();
